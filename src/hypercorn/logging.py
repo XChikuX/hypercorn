@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-import re
 import logging
 import os
+import re
 import sys
 import time
 from collections.abc import Mapping
 from http import HTTPStatus
 from logging.config import dictConfig, fileConfig
-from typing import Any, IO, TYPE_CHECKING
+from typing import Any, cast, IO, TYPE_CHECKING
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -20,6 +20,85 @@ else:
 if TYPE_CHECKING:
     from .config import Config
     from .typing import ResponseSummary, WWWScope
+
+
+def _default_logging_config() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "hypercorn": {
+                "format": "%(asctime)s [%(process)d] [%(levelname)s] %(message)s",
+                "datefmt": "[%Y-%m-%d %H:%M:%S %z]",
+            }
+        },
+        "handlers": {
+            "hypercorn.error": {
+                "class": "logging.StreamHandler",
+                "formatter": "hypercorn",
+                "stream": "ext://sys.stderr",
+            },
+            "hypercorn.access": {
+                "class": "logging.StreamHandler",
+                "formatter": "hypercorn",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            "hypercorn.error": {
+                "handlers": ["hypercorn.error"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "hypercorn.access": {
+                "handlers": ["hypercorn.access"],
+                "level": "INFO",
+                "propagate": False,
+            },
+        },
+    }
+
+
+def _create_handler_config(target: str, stream: str) -> dict[str, str]:
+    if target == "-":
+        return {
+            "class": "logging.StreamHandler",
+            "formatter": "hypercorn",
+            "stream": stream,
+        }
+    return {
+        "class": "logging.FileHandler",
+        "formatter": "hypercorn",
+        "filename": target,
+    }
+
+
+def _create_default_logging_config(config: Config) -> dict[str, Any]:
+    log_config = _default_logging_config()
+    handlers = cast(dict[str, dict[str, str]], log_config["handlers"])
+    loggers = cast(dict[str, dict[str, Any]], log_config["loggers"])
+
+    for name, target, stream in (
+        ("hypercorn.access", config.accesslog, "ext://sys.stdout"),
+        ("hypercorn.error", config.errorlog, "ext://sys.stderr"),
+    ):
+        if isinstance(target, str):
+            handlers[name] = _create_handler_config(target, stream)
+            if config.loglevel is not None:
+                loggers[name]["level"] = config.loglevel.upper()
+        else:
+            del handlers[name]
+            del loggers[name]
+
+    return log_config
+
+
+def _get_logger(name: str, target: logging.Logger | str | None) -> logging.Logger | None:
+    if isinstance(target, logging.Logger):
+        return target
+    if target is None:
+        return None
+    return logging.getLogger(name)
 
 
 def _create_logger(
@@ -56,18 +135,21 @@ class Logger:
         self.access_log_format = config.access_log_format
         self.access_log_atoms = frozenset(re.findall(r"%\(([^)]+)\)s", self.access_log_format))
 
-        self.access_logger = _create_logger(
-            "hypercorn.access",
-            config.accesslog,
-            config.loglevel,
-            sys.stdout,
-            propagate=False,
-        )
-        self.error_logger = _create_logger(
-            "hypercorn.error", config.errorlog, config.loglevel, sys.stderr
-        )
-
         if config.logconfig is not None:
+            self.access_logger = _create_logger(
+                "hypercorn.access",
+                config.accesslog,
+                config.loglevel,
+                sys.stdout,
+                propagate=False,
+            )
+            self.error_logger = _create_logger(
+                "hypercorn.error",
+                config.errorlog,
+                config.loglevel,
+                sys.stderr,
+                propagate=False,
+            )
             if config.logconfig.startswith("json:"):
                 with open(config.logconfig[5:]) as file_:
                     dictConfig(json.load(file_))
@@ -80,9 +162,26 @@ class Logger:
                     "here": os.path.dirname(config.logconfig),
                 }
                 fileConfig(config.logconfig, defaults=log_config, disable_existing_loggers=False)
+        elif config.logconfig_dict is not None:
+            self.access_logger = _create_logger(
+                "hypercorn.access",
+                config.accesslog,
+                config.loglevel,
+                sys.stdout,
+                propagate=False,
+            )
+            self.error_logger = _create_logger(
+                "hypercorn.error",
+                config.errorlog,
+                config.loglevel,
+                sys.stderr,
+                propagate=False,
+            )
+            dictConfig(config.logconfig_dict)
         else:
-            if config.logconfig_dict is not None:
-                dictConfig(config.logconfig_dict)
+            dictConfig(_create_default_logging_config(config))
+            self.access_logger = _get_logger("hypercorn.access", config.accesslog)
+            self.error_logger = _get_logger("hypercorn.error", config.errorlog)
 
     async def access(
         self, request: WWWScope, response: ResponseSummary, request_time: float
@@ -241,7 +340,9 @@ class AccessLogAtoms(dict):
     def _get_path_with_qs(self) -> str:
         if self._path_with_qs is None:
             query_string = self._get_query_string()
-            self._path_with_qs = self._request["path"] + ("?" + query_string if query_string else "")
+            self._path_with_qs = self._request["path"] + (
+                "?" + query_string if query_string else ""
+            )
         return self._path_with_qs
 
     def _get_status_code(self) -> str:
@@ -273,13 +374,16 @@ class AccessLogAtoms(dict):
         if self._response is None:
             return "-"
         if self._response_header_cache is None:
+            response_headers = cast(list[tuple[bytes, bytes]], self._response.get("headers", []))
             self._response_header_cache = {
                 header_name.decode("latin1").lower(): value.decode("latin1")
-                for header_name, value in self._response.get("headers", [])  # type: ignore[arg-type]
+                for header_name, value in response_headers
             }
         return self._response_header_cache.get(name, "-")
 
     def _get_environ(self, name: str) -> str:
         if self._environ_cache is None:
-            self._environ_cache = {env_name.lower(): value for env_name, value in os.environ.items()}
+            self._environ_cache = {
+                env_name.lower(): value for env_name, value in os.environ.items()
+            }
         return self._environ_cache.get(name, "-")
