@@ -7,10 +7,9 @@ import re
 import sys
 import time
 from collections.abc import Mapping
-from copy import deepcopy
 from http import HTTPStatus
 from logging.config import dictConfig, fileConfig
-from typing import Any, IO, TYPE_CHECKING, cast
+from typing import Any, cast, IO, TYPE_CHECKING
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -23,39 +22,41 @@ if TYPE_CHECKING:
     from .typing import ResponseSummary, WWWScope
 
 
-_DEFAULT_FORMATTER = {
-    "format": "%(asctime)s [%(process)d] [%(levelname)s] %(message)s",
-    "datefmt": "[%Y-%m-%d %H:%M:%S %z]",
-}
-_DEFAULT_LOGGING_CONFIG = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {"hypercorn": _DEFAULT_FORMATTER},
-    "handlers": {
-        "hypercorn.error": {
-            "class": "logging.StreamHandler",
-            "formatter": "hypercorn",
-            "stream": "ext://sys.stderr",
+def _default_logging_config() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "hypercorn": {
+                "format": "%(asctime)s [%(process)d] [%(levelname)s] %(message)s",
+                "datefmt": "[%Y-%m-%d %H:%M:%S %z]",
+            }
         },
-        "hypercorn.access": {
-            "class": "logging.StreamHandler",
-            "formatter": "hypercorn",
-            "stream": "ext://sys.stdout",
+        "handlers": {
+            "hypercorn.error": {
+                "class": "logging.StreamHandler",
+                "formatter": "hypercorn",
+                "stream": "ext://sys.stderr",
+            },
+            "hypercorn.access": {
+                "class": "logging.StreamHandler",
+                "formatter": "hypercorn",
+                "stream": "ext://sys.stdout",
+            },
         },
-    },
-    "loggers": {
-        "hypercorn.error": {
-            "handlers": ["hypercorn.error"],
-            "level": "INFO",
-            "propagate": False,
+        "loggers": {
+            "hypercorn.error": {
+                "handlers": ["hypercorn.error"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "hypercorn.access": {
+                "handlers": ["hypercorn.access"],
+                "level": "INFO",
+                "propagate": False,
+            },
         },
-        "hypercorn.access": {
-            "handlers": ["hypercorn.access"],
-            "level": "INFO",
-            "propagate": False,
-        },
-    },
-}
+    }
 
 
 def _create_handler_config(target: str, stream: str) -> dict[str, str]:
@@ -73,7 +74,7 @@ def _create_handler_config(target: str, stream: str) -> dict[str, str]:
 
 
 def _create_default_logging_config(config: Config) -> dict[str, Any]:
-    log_config: dict[str, Any] = deepcopy(_DEFAULT_LOGGING_CONFIG)
+    log_config = _default_logging_config()
     handlers = cast(dict[str, dict[str, str]], log_config["handlers"])
     loggers = cast(dict[str, dict[str, Any]], log_config["loggers"])
 
