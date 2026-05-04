@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -10,6 +11,15 @@ import pytest
 from hypercorn.config import Config
 from hypercorn.logging import AccessLogAtoms, Logger
 from hypercorn.typing import HTTPScope, ResponseSummary
+
+
+class _RecordingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
 
 
 @pytest.mark.parametrize(
@@ -43,7 +53,9 @@ def test_access_logger_init(
         else:
             assert isinstance(logger.access_logger.handlers[0], expected_handler_type)
 
-    assert logger.access_log_atoms == frozenset(re.findall(r"%\(([^)]+)\)s", logger.access_log_format))
+    assert logger.access_log_atoms == frozenset(
+        re.findall(r"%\(([^)]+)\)s", logger.access_log_format)
+    )
 
 
 @pytest.mark.parametrize(
@@ -58,6 +70,25 @@ def test_loglevel_option(level: str | None, expected: int) -> None:
     config.loglevel = level
     logger = Logger(config)
     assert logger.error_logger.getEffectiveLevel() == expected
+
+
+def test_default_error_logger_does_not_propagate() -> None:
+    config = Config()
+    logger = Logger(config)
+    root_logger = logging.getLogger()
+    handler = _RecordingHandler()
+    previous_level = root_logger.level
+
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+    try:
+        asyncio.run(logger.info("message"))
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(previous_level)
+
+    assert logger.error_logger.propagate is False
+    assert handler.records == []
 
 
 @pytest.fixture(name="response")
@@ -113,7 +144,9 @@ def test_access_log_environ_atoms(http_scope: HTTPScope, response: ResponseSumma
     assert atoms["{random}e"] == "Environ"
 
 
-def test_access_log_required_atoms_precompute(http_scope: HTTPScope, response: ResponseSummary) -> None:
+def test_access_log_required_atoms_precompute(
+    http_scope: HTTPScope, response: ResponseSummary
+) -> None:
     os.environ["Random"] = "Environ"
     atoms = AccessLogAtoms(http_scope, response, 0, frozenset({"h", "{random}e"}))
     assert atoms["h"] == "127.0.0.1:80"

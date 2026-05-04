@@ -44,6 +44,7 @@ def test_load_config(monkeypatch: MonkeyPatch) -> None:
         ("--ca-certs", "/path", "ca_certs"),
         ("--certfile", "/path", "certfile"),
         ("--ciphers", "DHE-RSA-AES128-SHA", "ciphers"),
+        ("--log-level", "warning", "loglevel"),
         ("--worker-class", "trio", "worker_class"),
         ("--keep-alive", 20, "keep_alive_timeout"),
         ("--keyfile", "/path", "keyfile"),
