@@ -373,9 +373,10 @@ class AccessLogAtoms(dict):
         if self._response is None:
             return "-"
         if self._response_header_cache is None:
+            response_headers = cast(list[tuple[bytes, bytes]], self._response.get("headers", []))
             self._response_header_cache = {
                 header_name.decode("latin1").lower(): value.decode("latin1")
-                for header_name, value in self._response.get("headers", [])
+                for header_name, value in response_headers
             }
         return self._response_header_cache.get(name, "-")
 
